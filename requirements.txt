@@ -5,3 +5,4 @@ pandas
 requests
 pymongo
 python-dotenv
+openai
