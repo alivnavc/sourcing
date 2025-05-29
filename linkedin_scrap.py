@@ -16,7 +16,11 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, NoSuchElementException
 import os
 from dotenv import load_dotenv, find_dotenv
+import os
+from openai import OpenAI
 
+# Initialize OpenAI client
+client = OpenAI(api_key=os.getenv('open_api_key'))
 # Load the .env file
 # load_dotenv()
 load_dotenv(dotenv_path=".env", override=True)
@@ -81,20 +85,6 @@ class LinkedInScraper:
                 print("Please ensure Chrome and ChromeDriver are installed and compatible")
                 exit(1)
         
-    def read_excel(self):
-        """Read credentials and search role from Excel file"""
-        try:
-            df = pd.read_excel(self.excel_path)
-            if 'role' not in df.columns:
-                raise Exception("Excel must contain 'role' columns")
-            
-            # Get the first row's data
-            credentials = df.iloc[0]
-            return credentials['role']
-        except Exception as e:
-            print(f"Error reading Excel file: {e}")
-            self.driver.quit()
-            exit(1)
     
     def login(self, username, password):
         """Login to LinkedIn with the provided credentials"""
@@ -171,7 +161,12 @@ class LinkedInScraper:
                         filter_section.find_element(By.XPATH, ".//button[contains(text(), 'People') or contains(@aria-label, 'People')]").click()
                     except:
                         # Fourth attempt - try direct URL with query parameter
-                        search_url = f"https://www.linkedin.com/search/results/people/?keywords={role.replace(' ', '%20')}"
+                        role = self.generate_linkedin_search_string(role)
+                        role = role.split("OR")
+                        skills = os.getenv('skills')
+                        normalize_titles_and_generate_query = self.normalize_titles_and_generate_query(role, skills)
+                        print(f"Generated search string: {normalize_titles_and_generate_query}")
+                        search_url = f"https://www.linkedin.com/search/results/people/?keywords={normalize_titles_and_generate_query}"
                         print(f"Using direct URL: {search_url}")
                         self.driver.get(search_url)
             
@@ -185,7 +180,12 @@ class LinkedInScraper:
                 return True
             except:
                 # One more attempt with a direct URL
-                search_url = f"https://www.linkedin.com/search/results/people/?keywords={role.replace(' ', '%20')}"
+                role = self.generate_linkedin_search_string(role)
+                role = role.split("OR")
+                skills = os.getenv('skills')
+                normalize_titles_and_generate_query = self.normalize_titles_and_generate_query(role, skills)
+                print(f"Generated search string: {normalize_titles_and_generate_query}")
+                search_url = f"https://www.linkedin.com/search/results/people/?keywords={normalize_titles_and_generate_query}"
                 print(f"Using direct URL as fallback: {search_url}")
                 self.driver.get(search_url)
                 time.sleep(random.randint(5, 10))  # Random wait to avoid detection
@@ -195,7 +195,13 @@ class LinkedInScraper:
             print(f"Error during role search: {e}")
             # Try one final approach - direct URL navigation
             try:
-                search_url = f"https://www.linkedin.com/search/results/people/?keywords={role.replace(' ', '%20')}"
+                role = self.generate_linkedin_search_string(role)
+                role = role.split("OR")
+                skills = os.getenv('skills')
+                normalize_titles_and_generate_query = self.normalize_titles_and_generate_query(role, skills)
+                print(f"Generated search string: {normalize_titles_and_generate_query}")
+                search_url = f"https://www.linkedin.com/search/results/people/?keywords={normalize_titles_and_generate_query}"
+                search_url = f"https://www.linkedin.com/search/results/people/?keywords={role}"
                 print(f"Using direct URL after error: {search_url}")
                 self.driver.get(search_url)
                 time.sleep(random.randint(5, 10))  # Random wait to avoid detection
@@ -625,7 +631,7 @@ class LinkedInScraper:
             if not username or not password:
                 print("Username or password not found in environment variables. Exiting...")
                 return
-            role = self.read_excel()
+            role = os.getenv('role')
             print(f"Loaded credentials for {username} and searching for role: {role}")
             
             # Login to LinkedIn
@@ -670,8 +676,8 @@ class LinkedInScraper:
             self.driver.quit()
 
     def linkedin_scraping_dog(self, profile_id):
-         api_key = "682fb90d765368e823493cca"
-         api_key = "682fb90d765368e823493cca"
+         api_key = os.getenv('scraping_dog_api_key')
+        
 
          url = "https://api.scrapingdog.com/linkedin"
   
@@ -695,7 +701,7 @@ class LinkedInScraper:
     def save_to_mongodb(self, data):
         DB_NAME = "flexon"
         COLLECTION_NAME = "jobApplicants"
-        MONGO_URI = "mongodb://botguru-ru:51DLgWA0VsStrA6jcwIhjMwG9ENNZEdgmbgSgu5qeP5ufQaecfykdWr87ZwqPbs5w8prv1YmfDONACDbTz7f3A%3D%3D@botguru-ru.mongo.cosmos.azure.com:10255/?ssl=true&replicaSet=globaldb&retrywrites=false&maxIdleTimeMS=120000&appName=@botguru-ru@"
+        MONGO_URI = os.getenv('MONGODB_URI')
         client = MongoClient(MONGO_URI)
         db = client[DB_NAME]
         collection = db[COLLECTION_NAME]
@@ -708,8 +714,62 @@ class LinkedInScraper:
         else:
             result = collection.insert_one(data)
             print(f"Data inserted with ID: {result.inserted_id}")
+
+    def generate_linkedin_search_string(role: str) -> str:
+        # Dynamically build the boolean search string parts
+        # titles_part = " OR ".join(f'"{title}"' for title in titles)
+        # skills_part = " OR ".join(f'"{skill}"' for skill in skills)
+
+        # Prepare the prompt
+        prompt = f"""
+        You are a technical sourcing expert.
+        Given the role: "{role}",
+
+
+        Generate a LinkedIn Boolean search string like with synonym of the role in the current market:
+
+        """
+
+        # Call the new OpenAI API syntax
+        response = client.chat.completions.create(
+            model="gpt-4",  # or "gpt-3.5-turbo" if you're using that
+            messages=[
+                {"role": "system", "content": "You are a helpful assistant that generates LinkedIn boolean search queries."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.3
+        )
+
+        # Extract and return the search string
+        return response.choices[0].message.content.strip()
     
-       
+    def normalize_titles_and_generate_query(raw_titles: list, skills: list) -> str:
+        """
+        Cleans a messy list of quoted/parenthesized titles and generates a LinkedIn Boolean query.
+
+        Args:
+            raw_titles (list): Messy input list like ['("Title1" ', ' "Title2")']
+            skills (list): Clean skill list like ["Python", "Docker"]
+
+        Returns:
+            str: Boolean search string
+        """
+        # Clean titles: strip whitespace, remove parentheses, keep inner quotes
+        cleaned_titles = []
+        for t in raw_titles:
+            t = t.strip()
+            if t.startswith("("):
+                t = t[1:]
+            if t.endswith(")"):
+                t = t[:-1]
+            cleaned_titles.append(t.strip())
+
+        titles_query = " OR ".join(cleaned_titles)
+        skills_query = " OR ".join(f'"{skill}"' for skill in skills)
+
+        return f"({titles_query}) AND ({skills_query} AND 'Open to work' OR 'Actively looking')"
+        
+        
 
 if __name__ == "__main__":
     # Define the specific Excel file path
